@@ -1,5 +1,9 @@
 package org.jboss.pnc.bifrost.endpoint;
 
+import io.prometheus.client.Counter;
+import org.eclipse.microprofile.metrics.MetricUnits;
+import org.eclipse.microprofile.metrics.annotation.Gauge;
+import org.eclipse.microprofile.metrics.annotation.Timed;
 import org.jboss.logging.Logger;
 import org.jboss.pnc.api.bifrost.dto.Line;
 import org.jboss.pnc.api.bifrost.dto.MetaData;
@@ -12,8 +16,11 @@ import org.jboss.pnc.bifrost.endpoint.provider.DataProvider;
 import org.jboss.pnc.common.security.Md5;
 
 import javax.inject.Inject;
+import javax.ws.rs.GET;
 import javax.ws.rs.Path;
+import javax.ws.rs.Produces;
 import javax.ws.rs.ServerErrorException;
+import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.StreamingOutput;
 import java.io.BufferedWriter;
@@ -37,7 +44,14 @@ import java.util.function.Consumer;
  * @author <a href="mailto:matejonnet@gmail.com">Matej Lazar</a>
  */
 @Path("/")
+@Timed
 public class RestImpl implements Bifrost {
+
+    static final Counter exceptionsTotal = Counter.build()
+            .name("RestImpl_Exceptions_Total")
+            .help("Errors and Warnings counting metric")
+            .labelNames("severity")
+            .register();
 
     private static Logger logger = Logger.getLogger(RestImpl.class);
 
@@ -62,6 +76,7 @@ public class RestImpl implements Bifrost {
             try {
                 queue.offer(Optional.empty(), 5, TimeUnit.SECONDS); // TODO
             } catch (InterruptedException e) {
+                exceptionsTotal.labels("error").inc();
                 logger.error("Cannot add end of data marker.", e);
             }
         };
@@ -80,6 +95,7 @@ public class RestImpl implements Bifrost {
                         writer.flush();
                     } catch (IOException e) {
                         timeoutProbeTask.get().cancel();
+                        exceptionsTotal.labels("warning").inc();
                         logger.warn("Cannot send connection probe, client might closed the connection.", e);
                         complete(subscription, outputStream);
                     }
@@ -111,6 +127,7 @@ public class RestImpl implements Bifrost {
                         break;
                     }
                 } catch (IOException e) {
+                    exceptionsTotal.labels("warning").inc();
                     logger.warn(
                             "Cannot write output. Client might closed the connection. Unsubscribing ... "
                                     + e.getMessage());
@@ -118,6 +135,7 @@ public class RestImpl implements Bifrost {
                     complete(subscription, outputStream);
                     break;
                 } catch (InterruptedException e) {
+                    exceptionsTotal.labels("error").inc();
                     logger.error("Cannot read from queue.", e);
                     timeoutProbeTask.ifPresent(t -> t.cancel());
                     complete(subscription, outputStream);
@@ -171,6 +189,7 @@ public class RestImpl implements Bifrost {
                     dataProvider.unsubscribe(subscription);
                 }
             } catch (Exception e) {
+                exceptionsTotal.labels("warning").inc();
                 logger.warn("Unsubscribing due to the exception.", e);
                 addEndOfDataMarker.run();
                 dataProvider.unsubscribe(subscription);
@@ -194,6 +213,7 @@ public class RestImpl implements Bifrost {
         try {
             outputStream.close();
         } catch (IOException e) {
+            exceptionsTotal.labels("warning").inc();
             logger.warn("Cannot close output stream.", e);
         }
     }
@@ -229,6 +249,7 @@ public class RestImpl implements Bifrost {
         try {
             md5 = new Md5();
         } catch (NoSuchAlgorithmException e) {
+            exceptionsTotal.labels("error").inc();
             throw new ServerErrorException(e.getMessage(), Response.Status.INTERNAL_SERVER_ERROR);
         }
 
@@ -236,6 +257,7 @@ public class RestImpl implements Bifrost {
             try {
                 md5.add(line.getMessage());
             } catch (UnsupportedEncodingException e) {
+                exceptionsTotal.labels("error").inc();
                 throw new ServerErrorException(e.getMessage(), Response.Status.INTERNAL_SERVER_ERROR);
             }
         };
@@ -248,5 +270,19 @@ public class RestImpl implements Bifrost {
                 onLine);
 
         return new MetaData(md5.digest());
+    }
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    @Gauge(name = "RestImpl_Err_Count", unit = MetricUnits.NONE, description = "Errors count")
+    public int showCurrentErrCount() {
+        return (int) exceptionsTotal.labels("error").get();
+    }
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    @Gauge(name = "RestImpl_Warn_Count", unit = MetricUnits.NONE, description = "Warnings count")
+    public int showCurrentWarnCount() {
+        return (int) exceptionsTotal.labels("warning").get();
     }
 }

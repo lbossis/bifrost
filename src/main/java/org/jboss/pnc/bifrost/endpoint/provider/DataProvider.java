@@ -1,6 +1,10 @@
 package org.jboss.pnc.bifrost.endpoint.provider;
 
+import io.prometheus.client.Counter;
 import io.quarkus.arc.DefaultBean;
+import org.eclipse.microprofile.metrics.MetricUnits;
+import org.eclipse.microprofile.metrics.annotation.Gauge;
+import org.eclipse.microprofile.metrics.annotation.Timed;
 import org.jboss.logging.Logger;
 import org.jboss.pnc.api.bifrost.dto.Line;
 import org.jboss.pnc.api.bifrost.enums.Direction;
@@ -17,6 +21,9 @@ import org.jboss.pnc.bifrost.source.ElasticSearchConfig;
 import javax.annotation.PostConstruct;
 import javax.enterprise.context.ApplicationScoped;
 import javax.inject.Inject;
+import javax.ws.rs.GET;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
 import java.io.IOException;
 import java.util.Optional;
 import java.util.function.Consumer;
@@ -26,7 +33,14 @@ import java.util.function.Consumer;
  */
 // @MainBean
 @ApplicationScoped
+@Timed
 public class DataProvider {
+
+    static final Counter exceptionsTotal = Counter.build()
+            .name("DataProvider_Exceptions_Total")
+            .help("Errors and Warnings counting metric")
+            .labelNames("severity")
+            .register();
 
     private Logger logger = Logger.getLogger(DataProvider.class);
 
@@ -85,6 +99,7 @@ public class DataProvider {
                         "Read from source completed, subscription " + subscription + " fetched lines: "
                                 + fetchedLines[0]);
             } catch (Exception e) {
+                exceptionsTotal.labels("error").inc();
                 logger.error("Error getting data from Elasticsearch.", e);
                 subscriptions.unsubscribe(subscription, Subscriptions.UnsubscribeReason.NO_DATA_FROM_SOURCE);
             }
@@ -161,4 +176,17 @@ public class DataProvider {
         return defaultFetchSize;
     }
 
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    @Gauge(name = "DataProvider_Err_Count", unit = MetricUnits.NONE, description = "Errors count")
+    public int showCurrentErrCount() {
+        return (int) exceptionsTotal.labels("error").get();
+    }
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    @Gauge(name = "DataProvider_Warn_Count", unit = MetricUnits.NONE, description = "Warnings count")
+    public int showCurrentWarnCount() {
+        return (int) exceptionsTotal.labels("warning").get();
+    }
 }

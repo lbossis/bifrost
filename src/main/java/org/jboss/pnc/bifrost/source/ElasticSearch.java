@@ -1,5 +1,10 @@
 package org.jboss.pnc.bifrost.source;
 
+import io.prometheus.client.Counter;
+
+import org.eclipse.microprofile.metrics.MetricUnits;
+import org.eclipse.microprofile.metrics.annotation.Gauge;
+import org.eclipse.microprofile.metrics.annotation.Timed;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.RestClient;
@@ -18,6 +23,9 @@ import org.jboss.pnc.bifrost.common.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.ws.rs.GET;
+import javax.ws.rs.Produces;
+import javax.ws.rs.core.MediaType;
 import java.io.IOException;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -31,7 +39,14 @@ import java.util.function.Consumer;
 /**
  * @author <a href="mailto:matejonnet@gmail.com">Matej Lazar</a>
  */
+@Timed
 public class ElasticSearch {
+
+    static final Counter exceptionsTotal = Counter.build()
+            .name("ElasticSearch_Exceptions_Total")
+            .help("Errors and Warnings counting metric")
+            .labelNames("severity")
+            .register();
 
     private final Logger logger = LoggerFactory.getLogger(ElasticSearch.class);
 
@@ -51,6 +66,7 @@ public class ElasticSearch {
         try {
             lowLevelRestClient = new ClientFactory(elasticSearchConfig).getConnectedClient();
         } catch (Exception e) {
+            exceptionsTotal.labels("error").inc();
             logger.error("Cannot connect client.", e);
         }
         this.indexes = elasticSearchConfig.getIndexes().split(",");
@@ -61,6 +77,7 @@ public class ElasticSearch {
         try {
             lowLevelRestClient.close();
         } catch (IOException e) {
+            exceptionsTotal.labels("error").inc();
             logger.error("Cannot close Elastisearch client.", e);
         }
     }
@@ -148,6 +165,7 @@ public class ElasticSearch {
             case DESC:
                 return SortOrder.DESC;
             default:
+                exceptionsTotal.labels("error").inc();
                 throw new RuntimeException("Unsupported direction: " + direction.toString());
         }
     }
@@ -210,5 +228,19 @@ public class ElasticSearch {
             queryBuilder.must().add(prefixBuilder);
         });
         return queryBuilder;
+    }
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    @Gauge(name = "ElasticSearch_Err_Count", unit = MetricUnits.NONE, description = "Errors count")
+    public int showCurrentErrCount() {
+        return (int) exceptionsTotal.labels("error").get();
+    }
+
+    @GET
+    @Produces(MediaType.TEXT_PLAIN)
+    @Gauge(name = "ElasticSearch_Warn_Count", unit = MetricUnits.NONE, description = "Warnings count")
+    public int showCurrentWarnCount() {
+        return (int) exceptionsTotal.labels("warning").get();
     }
 }
